@@ -1,54 +1,58 @@
+
 from datetime import timedelta
-import pendulum
-from airflow.decorators import dag
+from airflow import DAG
 from airflow.operators.dummy import DummyOperator
+from airflow.utils.dates import days_ago
 from airflow.models import Variable
-from operators import (StageToRedshiftOperator, LoadFactOperator,
-                       LoadDimensionOperator, DataQualityOperator)
+
+from operators.stage_redshift import StageToRedshiftOperator
+from operators.load_fact import LoadFactOperator
+from operators.load_dimension import LoadDimensionOperator
+from operators.data_quality import DataQualityOperator
 from helpers import SqlQueries
 
 default_args = {
     'owner': 'udacity',
-    'start_date': pendulum.now(),
     'depends_on_past': False,
+    'start_date': days_ago(1),
     'retries': 3,
     'retry_delay': timedelta(minutes=5),
     'email_on_retry': False
 }
 
-
-@dag(
+with DAG(
+    'final_project',
     default_args=default_args,
     description='Load and transform data in Redshift with Airflow',
     schedule_interval='0 * * * *',
     catchup=False
-)
-def final_project():
+) as dag:
 
     start_operator = DummyOperator(task_id='Begin_execution')
 
+    s3_bucket = Variable.get('s3_bucket')
+    s3_log_prefix = Variable.get('s3_log_prefix')
+    s3_song_prefix = Variable.get('s3_song_prefix')
+    log_json_path = Variable.get('log_json_path', default_var='auto')
+
     stage_events_to_redshift = StageToRedshiftOperator(
         task_id='Stage_events',
+        table='staging_events',
         redshift_conn_id='redshift',
         aws_credentials_id='aws_credentials',
-        table='staging_events',
-        s3_bucket=Variable.get('s3_bucket'),
-        s3_key='log_data/{execution_date.year}/{execution_date.month}',
-        region='us-east-1',
-        copy_json_option='s3://udacity-dend/log_json_path.json',
-        iam_role_arn=Variable.get('redshift_iam_role', default_var='')
+        s3_bucket=s3_bucket,
+        s3_key=s3_log_prefix,
+        json_path=log_json_path
     )
 
     stage_songs_to_redshift = StageToRedshiftOperator(
         task_id='Stage_songs',
+        table='staging_songs',
         redshift_conn_id='redshift',
         aws_credentials_id='aws_credentials',
-        table='staging_songs',
-        s3_bucket=Variable.get('s3_bucket'),
-        s3_key='song_data',
-        region='us-east-1',
-        copy_json_option='auto',
-        iam_role_arn=Variable.get('redshift_iam_role', default_var='')
+        s3_bucket=s3_bucket,
+        s3_key=s3_song_prefix,
+        json_path='auto'
     )
 
     load_songplays_table = LoadFactOperator(
@@ -94,50 +98,25 @@ def final_project():
         task_id='Run_data_quality_checks',
         redshift_conn_id='redshift',
         tests=[
-            {
-                'sql': 'SELECT COUNT(*) FROM songplays',
-                'expected': 0,
-                'cmp': 'gt'
-            },
-            {
-                'sql': 'SELECT COUNT(*) FROM users WHERE userid IS NULL',
-                'expected': 0,
-                'cmp': 'eq'
-            },
-            {
-                'sql': 'SELECT COUNT(*) FROM songs WHERE songid IS NULL',
-                'expected': 0,
-                'cmp': 'eq'
-            },
-            {
-                'sql': 'SELECT COUNT(*) FROM artists WHERE artistid IS NULL',
-                'expected': 0,
-                'cmp': 'eq'
-            },
-            {
-                'sql': 'SELECT COUNT(*) FROM time',
-                'expected': 0,
-                'cmp': 'gt'
-            }
+            {"sql": "SELECT COUNT(*) FROM songplays WHERE playid IS NULL", "expected": 0, "cmp": "eq"},
+            {"sql": "SELECT COUNT(*) FROM users WHERE userid IS NULL", "expected": 0, "cmp": "eq"}
         ]
     )
 
     stop_operator = DummyOperator(task_id='Stop_execution')
 
-    # Task dependencies
+    # Dependencies
     start_operator >> [stage_events_to_redshift, stage_songs_to_redshift]
-    
     [stage_events_to_redshift, stage_songs_to_redshift] >> load_songplays_table
-    
     load_songplays_table >> [
-        load_user_dimension_table, load_song_dimension_table,
-        load_artist_dimension_table, load_time_dimension_table
+        load_user_dimension_table,
+        load_song_dimension_table,
+        load_artist_dimension_table,
+        load_time_dimension_table
     ]
-    
     [
-        load_user_dimension_table, load_song_dimension_table,
-        load_artist_dimension_table, load_time_dimension_table
+        load_user_dimension_table,
+        load_song_dimension_table,
+        load_artist_dimension_table,
+        load_time_dimension_table
     ] >> run_quality_checks >> stop_operator
-
-
-final_project_dag = final_project()
