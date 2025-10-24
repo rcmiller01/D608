@@ -98,8 +98,13 @@ with DAG(
         task_id='Run_data_quality_checks',
         redshift_conn_id='redshift',
         tests=[
+            {"sql": "SELECT COUNT(*) FROM songplays", "expected": 0, "cmp": "gt"},
+            {"sql": "SELECT COUNT(*) FROM users", "expected": 0, "cmp": "gt"},
             {"sql": "SELECT COUNT(*) FROM songplays WHERE playid IS NULL", "expected": 0, "cmp": "eq"},
-            {"sql": "SELECT COUNT(*) FROM users WHERE userid IS NULL", "expected": 0, "cmp": "eq"}
+            {"sql": "SELECT COUNT(*) FROM users WHERE userid IS NULL", "expected": 0, "cmp": "eq"},
+            {"sql": "SELECT COUNT(*) FROM songs WHERE songid IS NULL", "expected": 0, "cmp": "eq"},
+            {"sql": "SELECT COUNT(*) FROM artists WHERE artistid IS NULL", "expected": 0, "cmp": "eq"},
+            {"sql": "SELECT COUNT(*) FROM time WHERE start_time IS NULL", "expected": 0, "cmp": "eq"}
         ]
     )
 
