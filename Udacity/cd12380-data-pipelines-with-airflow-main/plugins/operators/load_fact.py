@@ -1,36 +1,31 @@
-from airflow.hooks.postgres_hook import PostgresHook
-from airflow.models import BaseOperator
-from airflow.utils.decorators import apply_defaults
+# BaseOperator + PostgresHook imports that work on AF 1.10.x and 2.x
+try:
+    from airflow.models import BaseOperator
+except Exception:
+    from airflow.operators import BaseOperator
+
+try:
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+except Exception:
+    from airflow.hooks.postgres_hook import PostgresHook
 
 
 class LoadFactOperator(BaseOperator):
+    ui_color = "#F98866"
 
-    ui_color = '#F98866'
-
-    @apply_defaults
-    def __init__(self,
-                 redshift_conn_id="",
-                 table="",
-                 sql="",
-                 *args, **kwargs):
-
-        super(LoadFactOperator, self).__init__(*args, **kwargs)
+    def __init__(self, *, redshift_conn_id="redshift", table="", sql="", append_only=False, **kwargs):
+        super().__init__(**kwargs)
         self.redshift_conn_id = redshift_conn_id
         self.table = table
         self.sql = sql
+        self.append_only = append_only
 
     def execute(self, context):
-        self.log.info(f'LoadFactOperator starting for table {self.table}')
-        
-        # Get Redshift connection
-        redshift = PostgresHook(postgres_conn_id=self.redshift_conn_id)
-        
-        # Build INSERT statement
+        hook = PostgresHook(postgres_conn_id=self.redshift_conn_id)
+        if not self.append_only:
+            self.log.info("Truncating fact table %s", self.table)
+            hook.run(f"TRUNCATE TABLE {self.table};")
         insert_sql = f"INSERT INTO {self.table} {self.sql}"
-        
-        self.log.info(
-            f"Executing INSERT statement for fact table {self.table}"
-        )
-        redshift.run(insert_sql)
-        
-        self.log.info(f'LoadFactOperator completed for table {self.table}')
+        self.log.info("Loading fact table %s", self.table)
+        hook.run(insert_sql)
+        self.log.info("Fact load complete for %s", self.table)

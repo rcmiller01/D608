@@ -1,15 +1,14 @@
-
 from datetime import timedelta
 from airflow import DAG
-from airflow.operators.dummy import DummyOperator
+from airflow.operators.empty import EmptyOperator
 from airflow.utils.dates import days_ago
 from airflow.models import Variable
 
-from operators.stage_redshift import StageToRedshiftOperator
-from operators.load_fact import LoadFactOperator
-from operators.load_dimension import LoadDimensionOperator
-from operators.data_quality import DataQualityOperator
-from helpers import SqlQueries
+from plugins.operators.stage_redshift import StageToRedshiftOperator
+from plugins.operators.load_fact import LoadFactOperator
+from plugins.operators.load_dimension import LoadDimensionOperator
+from plugins.operators.data_quality import DataQualityOperator
+from plugins.helpers.sql_queries import SqlQueries
 
 default_args = {
     'owner': 'udacity',
@@ -28,38 +27,42 @@ with DAG(
     catchup=False
 ) as dag:
 
-    start_operator = DummyOperator(task_id='Begin_execution')
+    start = EmptyOperator(task_id='Begin_execution')
 
-    s3_bucket = Variable.get('s3_bucket')
-    s3_log_prefix = Variable.get('s3_log_prefix')
-    s3_song_prefix = Variable.get('s3_song_prefix')
-    log_json_path = Variable.get('log_json_path', default_var='auto')
+    s3_bucket = Variable.get('s3_bucket')                    # e.g., robert-miller
+    s3_log_prefix = Variable.get('s3_log_prefix')            # e.g., log_data
+    s3_song_prefix = Variable.get('s3_song_prefix')          # e.g., song_data
+    log_json_path = Variable.get('log_json_path', default_var='s3://udacity-dend/log_json_path.json')
+    role_arn = Variable.get('redshift_iam_role')
 
     stage_events_to_redshift = StageToRedshiftOperator(
         task_id='Stage_events',
-        table='staging_events',
         redshift_conn_id='redshift',
-        aws_credentials_id='aws_credentials',
+        table='staging_events',
         s3_bucket=s3_bucket,
         s3_key=s3_log_prefix,
-        json_path=log_json_path
+        region='us-east-1',
+        copy_json_option=log_json_path,   # JSONPaths for events
+        iam_role_arn=role_arn,
     )
 
     stage_songs_to_redshift = StageToRedshiftOperator(
         task_id='Stage_songs',
-        table='staging_songs',
         redshift_conn_id='redshift',
-        aws_credentials_id='aws_credentials',
+        table='staging_songs',
         s3_bucket=s3_bucket,
         s3_key=s3_song_prefix,
-        json_path='auto'
+        region='us-east-1',
+        copy_json_option='auto',          # songs use auto
+        iam_role_arn=role_arn,
     )
 
     load_songplays_table = LoadFactOperator(
         task_id='Load_songplays_fact_table',
         redshift_conn_id='redshift',
         table='songplays',
-        sql=SqlQueries.songplay_table_insert
+        sql=SqlQueries.songplay_table_insert,
+        append_only=False
     )
 
     load_user_dimension_table = LoadDimensionOperator(
@@ -98,20 +101,18 @@ with DAG(
         task_id='Run_data_quality_checks',
         redshift_conn_id='redshift',
         tests=[
-            {"sql": "SELECT COUNT(*) FROM songplays", "expected": 0, "cmp": "gt"},
-            {"sql": "SELECT COUNT(*) FROM users", "expected": 0, "cmp": "gt"},
             {"sql": "SELECT COUNT(*) FROM songplays WHERE playid IS NULL", "expected": 0, "cmp": "eq"},
             {"sql": "SELECT COUNT(*) FROM users WHERE userid IS NULL", "expected": 0, "cmp": "eq"},
+            {"sql": "SELECT COUNT(*) FROM songplays", "expected": 0, "cmp": "gt"},
             {"sql": "SELECT COUNT(*) FROM songs WHERE songid IS NULL", "expected": 0, "cmp": "eq"},
             {"sql": "SELECT COUNT(*) FROM artists WHERE artistid IS NULL", "expected": 0, "cmp": "eq"},
-            {"sql": "SELECT COUNT(*) FROM time WHERE start_time IS NULL", "expected": 0, "cmp": "eq"}
+            {"sql": "SELECT COUNT(*) FROM time", "expected": 0, "cmp": "gt"},
         ]
     )
 
-    stop_operator = DummyOperator(task_id='Stop_execution')
+    stop = EmptyOperator(task_id='Stop_execution')
 
-    # Dependencies
-    start_operator >> [stage_events_to_redshift, stage_songs_to_redshift]
+    start >> [stage_events_to_redshift, stage_songs_to_redshift]
     [stage_events_to_redshift, stage_songs_to_redshift] >> load_songplays_table
     load_songplays_table >> [
         load_user_dimension_table,
@@ -124,4 +125,4 @@ with DAG(
         load_song_dimension_table,
         load_artist_dimension_table,
         load_time_dimension_table
-    ] >> run_quality_checks >> stop_operator
+    ] >> run_quality_checks >> stop

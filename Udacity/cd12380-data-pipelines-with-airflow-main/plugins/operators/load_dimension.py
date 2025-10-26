@@ -1,48 +1,30 @@
-from airflow.hooks.postgres_hook import PostgresHook
-from airflow.models import BaseOperator
-from airflow.utils.decorators import apply_defaults
+try:
+    from airflow.models import BaseOperator
+except Exception:
+    from airflow.operators import BaseOperator
+
+try:
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+except Exception:
+    from airflow.hooks.postgres_hook import PostgresHook
 
 
 class LoadDimensionOperator(BaseOperator):
+    ui_color = "#80BD9E"
 
-    ui_color = '#80BD9E'
-
-    @apply_defaults
-    def __init__(self,
-                 redshift_conn_id="",
-                 table="",
-                 sql="",
-                 mode="truncate-insert",
-                 *args, **kwargs):
-
-        super(LoadDimensionOperator, self).__init__(*args, **kwargs)
+    def __init__(self, *, redshift_conn_id="redshift", table="", sql="", mode="truncate-insert", **kwargs):
+        super().__init__(**kwargs)
         self.redshift_conn_id = redshift_conn_id
         self.table = table
         self.sql = sql
-        self.mode = mode
+        self.mode = mode  # 'truncate-insert' or 'append'
 
     def execute(self, context):
-        self.log.info(
-            f'LoadDimensionOperator starting for table {self.table} '
-            f'in {self.mode} mode'
-        )
-        
-        # Get Redshift connection
-        redshift = PostgresHook(postgres_conn_id=self.redshift_conn_id)
-        
-        # Handle truncate-insert mode
+        hook = PostgresHook(postgres_conn_id=self.redshift_conn_id)
         if self.mode == "truncate-insert":
-            self.log.info(f"Truncating table {self.table}")
-            redshift.run(f"TRUNCATE TABLE {self.table}")
-        
-        # Build and execute INSERT statement
+            self.log.info("Truncating dimension table %s", self.table)
+            hook.run(f"TRUNCATE TABLE {self.table};")
         insert_sql = f"INSERT INTO {self.table} {self.sql}"
-        
-        self.log.info(
-            f"Executing INSERT statement for dimension table {self.table}"
-        )
-        redshift.run(insert_sql)
-        
-        self.log.info(
-            f'LoadDimensionOperator completed for table {self.table}'
-        )
+        self.log.info("Loading dimension table %s in %s mode", self.table, self.mode)
+        hook.run(insert_sql)
+        self.log.info("Dimension load complete for %s", self.table)
